@@ -59,12 +59,31 @@ def find_header_and_rows(excel_path):
     """시트 전체에서 '관로번호' 헤더를 찾아 해당 열의 값과 엑셀 행 번호 반환."""
     wb = load_workbook(excel_path, read_only=True, data_only=True)
     candidates = []
+    # 먼저 각 시트의 상단 200행 x 100열만 검색합니다.
     for ws in wb.worksheets:
-        for row in ws.iter_rows():
-            for cell in row:
-                if cell.value is not None and str(cell.value).strip() == "관로번호":
-                    candidates.append((ws.title, cell.row, cell.column))
-        # 표 제목이나 다른 위치의 동일 문자열이 여러 번 있어도 첫 후보를 찾으면 계속 탐색 가능
+        max_row = min(ws.max_row, 200)
+        max_col = min(ws.max_column, 100)
+        found = False
+        for row_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=max_row, min_col=1, max_col=max_col, values_only=True), start=1):
+            for col_idx, value in enumerate(row, start=1):
+                if value is not None and str(value).strip() == "관로번호":
+                    candidates.append((ws.title, row_idx, col_idx))
+                    found = True
+                    break
+            if found:
+                break
+    # 헤더가 상단에 없을 때만 전체 시트를 검색합니다.
+    if not candidates:
+        for ws in wb.worksheets:
+            for row_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
+                for col_idx, value in enumerate(row, start=1):
+                    if value is not None and str(value).strip() == "관로번호":
+                        candidates.append((ws.title, row_idx, col_idx))
+                        break
+                if candidates:
+                    break
+            if candidates:
+                break
     if not candidates:
         wb.close()
         raise ValueError("엑셀 파일에서 '관로번호'라는 셀을 찾지 못했습니다. 헤더 이름이 정확한지 확인해 주세요.")
@@ -310,13 +329,15 @@ class App(tk.Tk):
 
         self.run_button.configure(state="disabled")
         self.save_button.configure(state="disabled")
-        self.status.set("검사 중입니다. 동영상 파일이 많으면 시간이 걸릴 수 있습니다...")
+        self.status.set("검사 준비 중: 엑셀에서 관로번호 열을 찾고 있습니다...")
         self.update_idletasks()
         threading.Thread(target=self._scan_worker, args=(excel, folder, output, self.recursive.get()), daemon=True).start()
 
     def _scan_worker(self, excel, folder, output, recursive):
         try:
+            self.after(0, lambda: self.status.set("1/2 엑셀에서 관로번호를 읽는 중입니다..."))
             records, sheet_name, header_row, _ = find_header_and_rows(excel)
+            self.after(0, lambda: self.status.set("2/2 영상 파일명 2,000개를 빠르게 확인하는 중입니다..."))
             by_id, no_id = scan_videos(folder, recursive)
             # GUI 조작은 메인 스레드에서 수행
             self.after(0, lambda: self._finish_scan(excel, folder, output, records, by_id, no_id, sheet_name, header_row))
@@ -332,7 +353,8 @@ class App(tk.Tk):
             self.tree.delete(item)
         missing_count = 0
         multiple_count = 0
-        for rec in records:
+        preview_limit = 400
+        for idx, rec in enumerate(records):
             paths = by_id.get(rec["id"], [])
             count = len(paths)
             if count == 0:
@@ -343,13 +365,16 @@ class App(tk.Tk):
                 multiple_count += 1
             else:
                 status, tag = "정상", "normal"
-            shown_files = " | ".join(Path(p).name for p in paths)
-            self.tree.insert("", "end", values=(rec["id"], count, status, shown_files), tags=(tag,))
+            # 화면 미리보기는 최대 400행만 표시해 창이 멈춘 것처럼 보이는 현상을 줄입니다.
+            # 전체 데이터는 '결과 엑셀 저장'에 모두 포함됩니다.
+            if idx < preview_limit:
+                shown_files = " | ".join(Path(p).name for p in paths)
+                self.tree.insert("", "end", values=(rec["id"], count, status, shown_files), tags=(tag,))
         video_count = sum(len(v) for v in by_id.values()) + len(no_id)
         self.status.set(
             f"검사 완료: 엑셀 관로번호 {len(records)}행 / 검색한 동영상 {video_count}개 / "
             f"영상 없음 {missing_count}건 / 영상 여러 개 {multiple_count}건 / "
-            f"번호 추출 불가 {len(no_id)}개. 결과 엑셀 저장 버튼을 누르면 별도 파일로 저장됩니다."
+            f"번호 추출 불가 {len(no_id)}개. 미리보기는 최대 400행이며 전체 결과는 엑셀에 저장됩니다. 결과 엑셀 저장 버튼을 누르세요."
         )
         self.run_button.configure(state="normal")
         self.save_button.configure(state="normal")
