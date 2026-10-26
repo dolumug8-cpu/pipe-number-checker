@@ -7,6 +7,8 @@
 import os
 import re
 import threading
+import zipfile
+import xml.etree.ElementTree as ET
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
@@ -55,60 +57,100 @@ def extract_video_id(filename):
     return match.group(1) if match else ""
 
 
+def get_actual_max_row(excel_path, worksheet_xml_path):
+    """
+    Excel can report over a million rows because of formatting applied to an empty row.
+    Scan worksheet XML and return the last row containing an actual value/formula.
+    This avoids iterating through the inflated worksheet dimension.
+    """
+    max_data_row = 1
+    ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    with zipfile.ZipFile(excel_path, "r") as archive:
+        with archive.open(worksheet_xml_path) as stream:
+            for event, elem in ET.iterparse(stream, events=("end",)):
+                if elem.tag == ns + "row":
+                    row_num = int(elem.attrib.get("r", "0") or 0)
+                    has_value = False
+                    for cell in elem.findall(ns + "c"):
+                        # Cells containing only style information are not data.
+                        if (cell.find(ns + "v") is not None or
+                            cell.find(ns + "f") is not None or
+                            cell.find(ns + "is") is not None):
+                            has_value = True
+                            break
+                    if has_value:
+                        max_data_row = max(max_data_row, row_num)
+                    elem.clear()
+    return max_data_row
+
+
 def find_header_and_rows(excel_path):
-    """시트 전체에서 '관로번호' 헤더를 찾아 해당 열의 값과 엑셀 행 번호 반환."""
+    """Find the '관로번호' header, then read only the worksheet's real populated range."""
     wb = load_workbook(excel_path, read_only=True, data_only=True)
     candidates = []
-    # 먼저 각 시트의 상단 200행 x 100열만 검색합니다.
-    for ws in wb.worksheets:
-        max_row = min(ws.max_row, 200)
-        max_col = min(ws.max_column, 100)
-        found = False
-        for row_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=max_row, min_col=1, max_col=max_col, values_only=True), start=1):
-            for col_idx, value in enumerate(row, start=1):
-                if value is not None and str(value).strip() == "관로번호":
-                    candidates.append((ws.title, row_idx, col_idx))
-                    found = True
-                    break
-            if found:
-                break
-    # 헤더가 상단에 없을 때만 전체 시트를 검색합니다.
-    if not candidates:
+    try:
+        # Determine the actual populated row range from XML rather than trusting
+        # ws.max_row, which may be inflated by formatting-only rows.
+        actual_max_rows = {}
         for ws in wb.worksheets:
-            for row_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
+            actual_max_rows[ws.title] = get_actual_max_row(excel_path, ws._worksheet_path)
+
+        # The header is expected near the top of a survey sheet.
+        for ws in wb.worksheets:
+            max_row = min(actual_max_rows[ws.title], 200)
+            max_col = min(ws.max_column or 100, 100)
+            for row_idx, row in enumerate(
+                ws.iter_rows(min_row=1, max_row=max_row, min_col=1,
+                             max_col=max_col, values_only=True), start=1
+            ):
                 for col_idx, value in enumerate(row, start=1):
                     if value is not None and str(value).strip() == "관로번호":
                         candidates.append((ws.title, row_idx, col_idx))
                         break
-                if candidates:
+                if candidates and candidates[-1][0] == ws.title:
                     break
-            if candidates:
-                break
-    if not candidates:
-        wb.close()
-        raise ValueError("엑셀 파일에서 '관로번호'라는 셀을 찾지 못했습니다. 헤더 이름이 정확한지 확인해 주세요.")
 
-    # 일반적으로 실제 표에서 '관로번호'가 있는 가장 위쪽 헤더를 사용
-    sheet_name, header_row, col_idx = sorted(candidates, key=lambda x: (x[1], x[2]))[0]
-    ws = wb[sheet_name]
-    records = []
-    for row_idx in range(header_row + 1, ws.max_row + 1):
-        raw = ws.cell(row=row_idx, column=col_idx).value
-        code = normalize_excel_id(raw)
-        if not code:
-            continue
-        # 표의 반복 헤더/설명 문구는 건너뜀
-        if code == "관로번호" or not re.match(r"^\d+(?:-\d+)?$", code):
-            continue
-        records.append({
-            "sheet": sheet_name,
-            "row": row_idx,
-            "id": code,
-        })
-    wb.close()
-    if not records:
-        raise ValueError("'관로번호' 열은 찾았지만 그 아래에서 관로번호 데이터를 찾지 못했습니다.")
-    return records, sheet_name, header_row, col_idx
+        if not candidates:
+            raise ValueError(
+                "엑셀 파일의 상단 200행에서 '관로번호' 헤더를 찾지 못했습니다. "
+                "시트와 헤더 이름을 확인해 주세요."
+            )
+
+        # Prefer a sheet explicitly marked '수정' when both original and edited
+        # sheets contain the same header; otherwise use the earliest header.
+        candidates.sort(key=lambda x: (
+            0 if "수정" in x[0] else 1, x[1], x[2]
+        ))
+        sheet_name, header_row, col_idx = candidates[0]
+        ws = wb[sheet_name]
+        actual_max_row = actual_max_rows[sheet_name]
+        records = []
+
+        for row_idx, values in enumerate(
+            ws.iter_rows(
+                min_row=header_row + 1,
+                max_row=actual_max_row,
+                min_col=col_idx,
+                max_col=col_idx,
+                values_only=True,
+            ),
+            start=header_row + 1,
+        ):
+            raw = values[0] if values else None
+            code = normalize_excel_id(raw)
+            if not code:
+                continue
+            if code == "관로번호" or not re.fullmatch(r"\d+(?:-\d+)?", code):
+                continue
+            records.append({"sheet": sheet_name, "row": row_idx, "id": code})
+
+        if not records:
+            raise ValueError(
+                "'관로번호' 열은 찾았지만 그 아래에서 관로번호 데이터를 찾지 못했습니다."
+            )
+        return records, sheet_name, header_row, col_idx
+    finally:
+        wb.close()
 
 
 def scan_videos(folder, recursive=True):
@@ -335,7 +377,7 @@ class App(tk.Tk):
 
     def _scan_worker(self, excel, folder, output, recursive):
         try:
-            self.after(0, lambda: self.status.set("1/2 엑셀에서 관로번호를 읽는 중입니다..."))
+            self.after(0, lambda: self.status.set("1/2 엑셀의 실제 데이터 범위를 확인하고 관로번호를 읽는 중입니다..."))
             records, sheet_name, header_row, _ = find_header_and_rows(excel)
             self.after(0, lambda: self.status.set("2/2 영상 파일명 2,000개를 빠르게 확인하는 중입니다..."))
             by_id, no_id = scan_videos(folder, recursive)
