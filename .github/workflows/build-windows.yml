@@ -1,0 +1,46 @@
+
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "관로번호_검사프로그램.py"
+      - ".github/workflows/build-windows.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install packages
+        run: python -m pip install openpyxl pyinstaller
+
+      - name: Build EXE
+        run: >
+          python -m PyInstaller
+          --noconfirm
+          --clean
+          --onefile
+          --windowed
+          --name "관로번호_검사프로그램"
+          --collect-all openpyxl
+          "관로번호_검사프로그램.py"
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: 관로번호_검사프로그램-Windows
+          path: dist/관로번호_검사프로그램.exe
+          if-no-files-found: error
