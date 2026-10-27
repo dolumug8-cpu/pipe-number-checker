@@ -198,78 +198,40 @@ def style_sheet(ws):
 
 
 def write_report(output_path, excel_path, video_folder, records, by_id, no_id, sheet_name, header_row):
-    wb = Workbook()
-    summary = wb.active
-    summary.title = "전체 검사 결과"
-    summary.append(["엑셀 시트", "엑셀 행 번호", "관로번호", "동영상 개수", "검사 결과", "동영상 파일명(전체 경로)"])
-    missing_rows = []
-    multiple_rows = []
-    matched_rows = []
-    for rec in records:
-        code = rec["id"]
-        paths = by_id.get(code, [])
-        count = len(paths)
-        status = "영상 없음" if count == 0 else ("영상 여러 개" if count > 1 else "정상")
-        filenames = "\n".join(paths)
-        row = [rec["sheet"], rec["row"], code, count, status, filenames]
-        summary.append(row)
-        if count == 0:
-            missing_rows.append(row)
-        elif count > 1:
-            multiple_rows.append(row)
-        else:
-            matched_rows.append(row)
+    """원본 엑셀 양식을 유지하고 AE열(31열)에 검사 결과만 기록합니다."""
+    keep_vba = str(excel_path).lower().endswith(".xlsm")
+    wb = load_workbook(excel_path, keep_vba=keep_vba)
 
-    missing = wb.create_sheet("영상 없는 관로")
-    missing.append(["엑셀 시트", "엑셀 행 번호", "관로번호", "동영상 개수", "검사 결과", "동영상 파일명(전체 경로)"])
-    for row in missing_rows:
-        missing.append(row)
+    try:
+        if sheet_name not in wb.sheetnames:
+            raise ValueError(f"원본 엑셀에서 검사 대상 시트 '{sheet_name}'을 찾지 못했습니다.")
 
-    multiple = wb.create_sheet("영상 여러 개")
-    multiple.append(["엑셀 시트", "엑셀 행 번호", "관로번호", "동영상 개수", "검사 결과", "동영상 파일명(전체 경로)"])
-    for row in multiple_rows:
-        multiple.append(row)
+        ws = wb[sheet_name]
+        missing_count = 0
+        multiple_count = 0
 
-    # 실제 폴더에 있지만 엑셀의 관로번호에는 없는 영상 ID도 별도 표시
-    excel_ids = {rec["id"] for rec in records}
-    extra = wb.create_sheet("엑셀에 없는 영상")
-    extra.append(["파일에서 추출한 관로번호", "파일 경로", "비고"])
-    for code in sorted(by_id.keys()):
-        if code not in excel_ids:
-            for path in by_id[code]:
-                extra.append([code, path, "동영상은 있으나 엑셀 관로번호 목록에 없음"])
+        for rec in records:
+            code = rec["id"]
+            paths = by_id.get(code, [])
+            count = len(paths)
 
-    no_id_ws = wb.create_sheet("번호 추출 불가 영상")
-    no_id_ws.append(["파일 경로", "비고"])
-    for path in no_id:
-        no_id_ws.append([path, "파일명 시작 부분에서 숫자 관로번호를 추출하지 못함"])
+            if count == 0:
+                status = "영상 없음"
+                missing_count += 1
+            elif count > 1:
+                status = "영상 여러 개"
+                multiple_count += 1
+            else:
+                status = "정상"
 
-    info = wb.create_sheet("검사 정보")
-    info.append(["항목", "내용"])
-    info.append(["엑셀 파일", os.path.abspath(excel_path)])
-    info.append(["동영상 폴더", os.path.abspath(video_folder)])
-    info.append(["관로번호가 있는 시트", sheet_name])
-    info.append(["관로번호 헤더 행", header_row])
-    info.append(["엑셀 관로번호 행 수", len(records)])
-    info.append(["영상 없음", len(missing_rows)])
-    info.append(["영상 여러 개", len(multiple_rows)])
-    info.append(["관로번호가 추출된 영상 파일 수", sum(len(v) for v in by_id.values())])
-    info.append(["번호 추출 불가 영상 파일 수", len(no_id)])
-    info.append(["번호 추출 규칙", "파일명 첫 토큰의 영문/숫자 및 선택적 하이픈 번호를 인식. 첫 공백 뒤 설명은 무시하며 영문 대소문자는 구분하지 않음."])
-    info.append(["원본 보호", "원본 엑셀과 동영상은 수정/삭제하지 않았습니다."])
+            # AE열(31번째 열)에 결과 기록
+            ws.cell(row=rec["row"], column=31).value = status
 
-    for ws in wb.worksheets:
-        style_sheet(ws)
-    # 긴 파일 경로 열은 보기 편하게 넓히되 적절히 제한
-    summary.column_dimensions["F"].width = 55
-    missing.column_dimensions["F"].width = 55
-    multiple.column_dimensions["F"].width = 55
-    for ws in (summary, missing, multiple):
-        for row in ws.iter_rows(min_row=2, min_col=6, max_col=6):
-            row[0].alignment = Alignment(vertical="top", wrap_text=True)
-    wb.save(output_path)
-    wb.close()
-    return len(missing_rows), len(multiple_rows), len(by_id), len(no_id)
+        wb.save(output_path)
+        return missing_count, multiple_count, len(by_id), len(no_id)
+
+    finally:
+        wb.close()
 
 
 class App(tk.Tk):
@@ -348,7 +310,10 @@ class App(tk.Tk):
         if path:
             self.excel_path.set(path)
             if not self.output_path.get():
-                self.output_path.set(str(Path(path).with_name(Path(path).stem + "_관로번호검사결과.xlsx")))
+                source = Path(path)
+self.output_path.set(
+    str(source.with_name(source.stem + "_검사결과" + source.suffix))
+)
 
     def choose_folder(self):
         path = filedialog.askdirectory(title="동영상 폴더 선택")
