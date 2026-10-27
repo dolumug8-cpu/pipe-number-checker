@@ -198,13 +198,15 @@ def style_sheet(ws):
 
 
 def write_report(output_path, excel_path, video_folder, records, by_id, no_id, sheet_name, header_row):
-    """원본 엑셀 양식을 유지하고 AE열(31열)에 검사 결과만 기록합니다."""
+    """원본 엑셀 양식을 유지하면서 AE열에 검사 결과를 기록합니다."""
     keep_vba = str(excel_path).lower().endswith(".xlsm")
     wb = load_workbook(excel_path, keep_vba=keep_vba)
 
     try:
         if sheet_name not in wb.sheetnames:
-            raise ValueError(f"원본 엑셀에서 검사 대상 시트 '{sheet_name}'을 찾지 못했습니다.")
+            raise ValueError(
+                f"검사 대상 시트 '{sheet_name}'을 원본 엑셀에서 찾을 수 없습니다."
+            )
 
         ws = wb[sheet_name]
         missing_count = 0
@@ -212,8 +214,7 @@ def write_report(output_path, excel_path, video_folder, records, by_id, no_id, s
 
         for rec in records:
             code = rec["id"]
-            paths = by_id.get(code, [])
-            count = len(paths)
+            count = len(by_id.get(code, []))
 
             if count == 0:
                 status = "영상 없음"
@@ -224,7 +225,7 @@ def write_report(output_path, excel_path, video_folder, records, by_id, no_id, s
             else:
                 status = "정상"
 
-            # AE열(31번째 열)에 결과 기록
+            # 원본 관로번호가 있는 행의 AE열(31번째 열)에 기록
             ws.cell(row=rec["row"], column=31).value = status
 
         wb.save(output_path)
