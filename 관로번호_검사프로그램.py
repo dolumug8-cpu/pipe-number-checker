@@ -299,6 +299,8 @@ class App(tk.Tk):
         self.run_button.pack(side="left")
         self.save_button = ttk.Button(action, text="결과 엑셀 저장", command=self.save_report, state="disabled")
         self.save_button.pack(side="left", padx=(8, 0))
+        self.extra_button = ttk.Button(action, text="엑셀에 없는 영상 보기", command=self.show_extra_videos, state="disabled")
+        self.extra_button.pack(side="left", padx=(8, 0))
         ttk.Button(action, text="초기화", command=self.clear_results).pack(side="left", padx=(8, 0))
 
         self.status = tk.StringVar(value="엑셀 파일과 동영상 폴더를 선택한 뒤 '검사 실행'을 누르세요.")
@@ -413,14 +415,46 @@ class App(tk.Tk):
                 shown_files = " | ".join(Path(p).name for p in paths)
                 self.tree.insert("", "end", values=(rec["id"], count, status, shown_files), tags=(tag,))
         video_count = sum(len(v) for v in by_id.values()) + len(no_id)
+        excel_ids = {rec["id"] for rec in records}
+        extra_ids = [code for code in by_id if code not in excel_ids]
+        extra_video_count = sum(len(by_id[code]) for code in extra_ids)
         self.status.set(
             f"검사 완료: 엑셀 관로번호 {len(records)}행 / 검색한 동영상 {video_count}개 / "
             f"영상 없음 {missing_count}건 / 영상 여러 개 {multiple_count}건 / "
-            f"번호 추출 불가 {len(no_id)}개. 미리보기는 최대 400행이며 전체 결과는 엑셀에 저장됩니다. 결과 엑셀 저장 버튼을 누르세요."
+            f"엑셀에 없는 영상 {extra_video_count}개({len(extra_ids)}개 관로번호) / "
+            f"번호 추출 불가 {len(no_id)}개. 전체 결과는 결과 엑셀에 저장됩니다."
         )
         self.run_button.configure(state="normal")
         self.save_button.configure(state="normal")
+        self.extra_button.configure(state="normal")
         # 기본 경로가 비어 있지 않으면 바로 저장하지 않고 사용자가 저장 버튼을 누르게 함
+
+    def show_extra_videos(self):
+        """Show videos whose extracted IDs do not exist in the Excel ID column."""
+        if not self.last_report:
+            messagebox.showinfo("안내", "먼저 검사를 실행해 주세요.")
+            return
+        info = self.last_report
+        excel_ids = {rec["id"] for rec in info["records"]}
+        extras = []
+        for code in sorted(info["by_id"].keys()):
+            if code not in excel_ids:
+                for path in info["by_id"][code]:
+                    extras.append((code, path))
+
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        if not extras:
+            self.tree.insert("", "end", values=("없음", 0, "엑셀에 없는 영상 없음", "모든 번호가 엑셀 목록에 있습니다."))
+            self.status.set("역방향 검사 완료: 엑셀 관로번호에 없는 동영상이 없습니다.")
+            return
+
+        for code, path in extras[:1000]:
+            self.tree.insert("", "end", values=(code, 1, "엑셀에 없음", Path(path).name), tags=("missing",))
+        self.status.set(
+            f"역방향 검사 결과: 엑셀에 없는 동영상 {len(extras)}개. "
+            f"화면에는 최대 1,000개까지 표시하며, 전체 목록은 결과 엑셀의 '엑셀에 없는 영상' 시트에서 확인하세요."
+        )
 
     def save_report(self):
         if not self.last_report:
@@ -460,6 +494,7 @@ class App(tk.Tk):
             self.tree.delete(item)
         self.last_report = None
         self.save_button.configure(state="disabled")
+        self.extra_button.configure(state="disabled")
         self.status.set("초기화했습니다. 엑셀 파일과 동영상 폴더를 선택한 뒤 검사하세요.")
 
 
