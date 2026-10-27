@@ -306,14 +306,22 @@ class App(tk.Tk):
         ttk.Button(parent, text="찾아보기...", command=command).grid(row=row, column=2, padx=5, pady=5)
 
     def choose_excel(self):
-        path = filedialog.askopenfilename(title="엑셀 파일 선택", filetypes=[("Excel 파일", "*.xlsx *.xlsm"), ("모든 파일", "*.*")])
+        path = filedialog.askopenfilename(
+            title="엑셀 파일 선택",
+            filetypes=[
+                ("Excel 파일", "*.xlsx *.xlsm"),
+                ("모든 파일", "*.*")
+            ]
+        )
+
         if path:
             self.excel_path.set(path)
+
             if not self.output_path.get():
                 source = Path(path)
-self.output_path.set(
-    str(source.with_name(source.stem + "_검사결과" + source.suffix))
-)
+                self.output_path.set(
+                    str(source.with_name(source.stem + "_검사결과" + source.suffix))
+                )
 
     def choose_folder(self):
         path = filedialog.askdirectory(title="동영상 폴더 선택")
