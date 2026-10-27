@@ -26,10 +26,15 @@ VIDEO_EXTENSIONS = {
     ".3gp", ".ts", ".mts", ".m2ts", ".webm", ".vob", ".flv"
 }
 
-# 파일명 시작에서 숫자 또는 숫자-숫자 형태만 관로번호로 추출
-# 예: 202101900-1 9M.mp4 -> 202101900-1
-#     202101900(영상관로번호류).mp4 -> 202101900
-ID_PATTERN = re.compile(r"^(\d+(?:-\d+)?)")
+# 파일명 첫 토큰에서 영문/숫자 관로번호를 추출
+# 예: NH-01.mp4 -> NH-01, ABC123 9M.mp4 -> ABC123, 202101900-1.mp4 -> 202101900-1
+# 첫 띄어쓰기 뒤의 설명은 무시하고, 비교는 대소문자 구분 없이 수행
+ID_PATTERN = re.compile(r"^([A-Za-z0-9]+(?:-[A-Za-z0-9]+)?)")
+VALID_ID_PATTERN = re.compile(r"^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)?$")
+
+def canonical_id(value):
+    """관로번호 비교용 정규형: 앞뒤 공백 제거 및 영문 대문자화."""
+    return str(value).strip().upper()
 
 
 def normalize_excel_id(value):
@@ -53,8 +58,10 @@ def normalize_excel_id(value):
 
 def extract_video_id(filename):
     stem = Path(filename).stem.strip()
-    match = ID_PATTERN.match(stem)
-    return match.group(1) if match else ""
+    # 첫 띄어쓰기 앞부분만 ID로 취급. 이후 설명은 비교 대상에서 제외.
+    token = stem.split(None, 1)[0] if stem else ""
+    match = ID_PATTERN.match(token)
+    return canonical_id(match.group(1)) if match else ""
 
 
 def get_actual_max_row(excel_path, worksheet_xml_path):
@@ -140,8 +147,9 @@ def find_header_and_rows(excel_path):
             code = normalize_excel_id(raw)
             if not code:
                 continue
-            if code == "관로번호" or not re.fullmatch(r"\d+(?:-\d+)?", code):
+            if code == "관로번호" or not VALID_ID_PATTERN.fullmatch(code):
                 continue
+            code = canonical_id(code)
             records.append({"sheet": sheet_name, "row": row_idx, "id": code})
 
         if not records:
@@ -247,7 +255,7 @@ def write_report(output_path, excel_path, video_folder, records, by_id, no_id, s
     info.append(["영상 여러 개", len(multiple_rows)])
     info.append(["관로번호가 추출된 영상 파일 수", sum(len(v) for v in by_id.values())])
     info.append(["번호 추출 불가 영상 파일 수", len(no_id)])
-    info.append(["번호 추출 규칙", "파일명 시작의 숫자 또는 숫자-숫자만 관로번호로 인식. 공백/괄호 뒤 설명은 무시."])
+    info.append(["번호 추출 규칙", "파일명 첫 토큰의 영문/숫자 및 선택적 하이픈 번호를 인식. 첫 공백 뒤 설명은 무시하며 영문 대소문자는 구분하지 않음."])
     info.append(["원본 보호", "원본 엑셀과 동영상은 수정/삭제하지 않았습니다."])
 
     for ws in wb.worksheets:
